@@ -27,7 +27,7 @@ public class MainActivity extends Activity {
     private final ArrayList<Card> queue = new ArrayList<>();
     private Card current;
     private TextView wordView, translationView, statsView, emptyView;
-    private Button revealButton, againButton, hardButton, goodButton, easyButton;
+    private Button revealButton, againButton, hardButton, goodButton, easyButton, removeButton, extraNewButton;
     private LinearLayout ratingRow, cardBox;
     private final SimpleDateFormat dayKey = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
 
@@ -116,6 +116,11 @@ public class MainActivity extends Activity {
         emptyView.setVisibility(View.GONE);
         cardBox.addView(emptyView, new LinearLayout.LayoutParams(-1, -2));
 
+        extraNewButton = button("+10 новых слов");
+        extraNewButton.setTextSize(16);
+        extraNewButton.setVisibility(View.GONE);
+        cardBox.addView(extraNewButton, new LinearLayout.LayoutParams(-1, dp(58)));
+
         revealButton = button("Показать перевод");
         revealButton.setTextSize(16);
         cardBox.addView(revealButton, new LinearLayout.LayoutParams(-1, dp(58)));
@@ -132,6 +137,10 @@ public class MainActivity extends Activity {
         ratingRow.addView(easyButton, new LinearLayout.LayoutParams(0, dp(62), 1));
         cardBox.addView(ratingRow, new LinearLayout.LayoutParams(-1, -2));
 
+        removeButton = button("Убрать слово");
+        removeButton.setVisibility(View.GONE);
+        cardBox.addView(removeButton, new LinearLayout.LayoutParams(-1, dp(50)));
+
         TextView footer = text("Снова — почти сразу • Трудно — скоро • Хорошо — обычный интервал • Легко — длиннее", 12, Color.rgb(125,132,146));
         footer.setGravity(Gravity.CENTER);
         footer.setPadding(dp(8), dp(12), dp(8), 0);
@@ -146,13 +155,18 @@ public class MainActivity extends Activity {
         easyButton.setOnClickListener(v -> rate(3));
         importBtn.setOnClickListener(v -> importCsv());
         settingsBtn.setOnClickListener(v -> showSettings());
+        removeButton.setOnClickListener(v -> confirmRemoveCurrent());
+        extraNewButton.setOnClickListener(v -> {
+            addExtraNewWords(10);
+            loadQueue();
+        });
     }
 
     private void loadQueue() {
         queue.clear();
         long now = System.currentTimeMillis();
         queue.addAll(db.dueCards(now, 250));
-        int remainingNew = Math.max(0, getNewLimit() - newSeenToday());
+        int remainingNew = Math.max(0, getNewLimit() + getExtraNewWords() - newSeenToday());
         if (remainingNew > 0) queue.addAll(db.newCards(remainingNew));
         showNext();
     }
@@ -165,21 +179,25 @@ public class MainActivity extends Activity {
             translationView.setVisibility(View.GONE);
             revealButton.setVisibility(View.GONE);
             ratingRow.setVisibility(View.GONE);
+            removeButton.setVisibility(View.GONE);
             emptyView.setVisibility(View.VISIBLE);
             long next = db.nextDue();
             String s = "На сегодня всё!";
             if (next > System.currentTimeMillis()) s += "\n\nСледующее повторение: " + formatDue(next);
             emptyView.setText(s);
+            extraNewButton.setVisibility(db.countNew() > 0 ? View.VISIBLE : View.GONE);
             return;
         }
         current = queue.remove(0);
         emptyView.setVisibility(View.GONE);
+        extraNewButton.setVisibility(View.GONE);
         wordView.setVisibility(View.VISIBLE);
         wordView.setText(current.word);
         translationView.setText(current.translation);
         translationView.setVisibility(View.GONE);
         revealButton.setVisibility(View.VISIBLE);
         ratingRow.setVisibility(View.GONE);
+        removeButton.setVisibility(View.VISIBLE);
     }
 
     private void reveal() {
@@ -252,13 +270,31 @@ public class MainActivity extends Activity {
     private void updateStats() {
         int due = db.countDue(System.currentTimeMillis());
         int seen = newSeenToday();
-        int limit = getNewLimit();
+        int limit = getNewLimit() + getExtraNewWords();
         int total = db.countAll();
         int learned = db.countLearned();
         statsView.setText("Карточек: " + total + "   •   Изучено: " + learned + "   •   К повторению: " + due + "   •   Новых сегодня: " + seen + "/" + limit);
     }
 
     private int getNewLimit() { return getPreferences(MODE_PRIVATE).getInt("new_limit", 20); }
+
+    private int getExtraNewWords() {
+        SharedPreferences p = getPreferences(MODE_PRIVATE);
+        String today = dayKey.format(new Date());
+        if (!today.equals(p.getString("extra_new_date", ""))) {
+            p.edit().putString("extra_new_date", today).putInt("extra_new", 0).apply();
+            return 0;
+        }
+        return p.getInt("extra_new", 0);
+    }
+
+    private void addExtraNewWords(int count) {
+        SharedPreferences p = getPreferences(MODE_PRIVATE);
+        String today = dayKey.format(new Date());
+        int current = today.equals(p.getString("extra_new_date", "")) ? p.getInt("extra_new", 0) : 0;
+        p.edit().putString("extra_new_date", today).putInt("extra_new", current + count).apply();
+    }
+
     private int newSeenToday() {
         SharedPreferences p = getPreferences(MODE_PRIVATE);
         String today = dayKey.format(new Date());
@@ -290,12 +326,32 @@ public class MainActivity extends Activity {
                 .setNegativeButton("Отмена", null).show();
     }
 
+    private void confirmRemoveCurrent() {
+        if (current == null) return;
+        final long cardId = current.id;
+        final String word = current.word;
+        new AlertDialog.Builder(this)
+                .setTitle("Убрать слово?")
+                .setMessage("«" + word + "» больше не будет появляться в изучении и повторениях.")
+                .setPositiveButton("Убрать", (d,w) -> {
+                    db.excludeCard(cardId);
+                    queue.removeIf(x -> x.id == cardId);
+                    current = null;
+                    showNext();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
     private void confirmReset() {
         new AlertDialog.Builder(this).setTitle("Сбросить прогресс?")
                 .setMessage("Все слова снова станут новыми. Импортированные слова останутся.")
                 .setPositiveButton("Сбросить", (d,w) -> {
                     db.resetProgress();
-                    getPreferences(MODE_PRIVATE).edit().remove("new_seen").remove("new_date").apply();
+                    getPreferences(MODE_PRIVATE).edit()
+                            .remove("new_seen").remove("new_date")
+                            .remove("extra_new").remove("extra_new_date")
+                            .apply();
                     loadQueue();
                 }).setNegativeButton("Отмена", null).show();
     }
@@ -329,12 +385,18 @@ public class MainActivity extends Activity {
     }
 
     class CardsDb extends SQLiteOpenHelper {
-        CardsDb(Context c) { super(c, "english_cards.db", null, 1); }
+        CardsDb(Context c) { super(c, "english_cards.db", null, 2); }
         @Override public void onCreate(SQLiteDatabase d) {
-            d.execSQL("CREATE TABLE cards(id INTEGER PRIMARY KEY AUTOINCREMENT, word TEXT NOT NULL COLLATE NOCASE UNIQUE, translation TEXT NOT NULL, due INTEGER NOT NULL DEFAULT 0, interval_days REAL NOT NULL DEFAULT 0, ease REAL NOT NULL DEFAULT 2.5, reps INTEGER NOT NULL DEFAULT 0, lapses INTEGER NOT NULL DEFAULT 0, is_new INTEGER NOT NULL DEFAULT 1)");
-            d.execSQL("CREATE INDEX idx_cards_due ON cards(is_new,due)");
+            d.execSQL("CREATE TABLE cards(id INTEGER PRIMARY KEY AUTOINCREMENT, word TEXT NOT NULL COLLATE NOCASE UNIQUE, translation TEXT NOT NULL, due INTEGER NOT NULL DEFAULT 0, interval_days REAL NOT NULL DEFAULT 0, ease REAL NOT NULL DEFAULT 2.5, reps INTEGER NOT NULL DEFAULT 0, lapses INTEGER NOT NULL DEFAULT 0, is_new INTEGER NOT NULL DEFAULT 1, is_excluded INTEGER NOT NULL DEFAULT 0)");
+            d.execSQL("CREATE INDEX idx_cards_due ON cards(is_excluded,is_new,due)");
         }
-        @Override public void onUpgrade(SQLiteDatabase d, int o, int n) {}
+        @Override public void onUpgrade(SQLiteDatabase d, int o, int n) {
+            if (o < 2) {
+                d.execSQL("ALTER TABLE cards ADD COLUMN is_excluded INTEGER NOT NULL DEFAULT 0");
+                d.execSQL("DROP INDEX IF EXISTS idx_cards_due");
+                d.execSQL("CREATE INDEX idx_cards_due ON cards(is_excluded,is_new,due)");
+            }
+        }
 
         void ensureSeeded() {
             SQLiteDatabase d=getWritableDatabase();
@@ -373,17 +435,19 @@ public class MainActivity extends Activity {
             out.add(b.toString()); return out.toArray(new String[0]);
         }
 
-        ArrayList<Card> dueCards(long now,int limit) { return query("SELECT * FROM cards WHERE is_new=0 AND due<=? ORDER BY due LIMIT "+limit,new String[]{String.valueOf(now)}); }
-        ArrayList<Card> newCards(int limit) { return query("SELECT * FROM cards WHERE is_new=1 ORDER BY id LIMIT "+limit,null); }
+        ArrayList<Card> dueCards(long now,int limit) { return query("SELECT * FROM cards WHERE is_excluded=0 AND is_new=0 AND due<=? ORDER BY due LIMIT "+limit,new String[]{String.valueOf(now)}); }
+        ArrayList<Card> newCards(int limit) { return query("SELECT * FROM cards WHERE is_excluded=0 AND is_new=1 ORDER BY id LIMIT "+limit,null); }
         ArrayList<Card> query(String sql,String[] args) {
             ArrayList<Card> a=new ArrayList<>(); try(Cursor c=getReadableDatabase().rawQuery(sql,args)){ while(c.moveToNext()){Card x=new Card();x.id=c.getLong(c.getColumnIndexOrThrow("id"));x.word=c.getString(c.getColumnIndexOrThrow("word"));x.translation=c.getString(c.getColumnIndexOrThrow("translation"));x.due=c.getLong(c.getColumnIndexOrThrow("due"));x.intervalDays=c.getDouble(c.getColumnIndexOrThrow("interval_days"));x.ease=c.getDouble(c.getColumnIndexOrThrow("ease"));x.reps=c.getInt(c.getColumnIndexOrThrow("reps"));x.lapses=c.getInt(c.getColumnIndexOrThrow("lapses"));x.isNew=c.getInt(c.getColumnIndexOrThrow("is_new"))==1;a.add(x);} } return a;
         }
         void saveProgress(Card c) { ContentValues v=new ContentValues();v.put("due",c.due);v.put("interval_days",c.intervalDays);v.put("ease",c.ease);v.put("reps",c.reps);v.put("lapses",c.lapses);v.put("is_new",c.isNew?1:0);getWritableDatabase().update("cards",v,"id=?",new String[]{String.valueOf(c.id)}); }
-        int countAll(){return scalar("SELECT COUNT(*) FROM cards",null);}
-        int countLearned(){return scalar("SELECT COUNT(*) FROM cards WHERE is_new=0",null);}
-        int countDue(long now){return scalar("SELECT COUNT(*) FROM cards WHERE is_new=0 AND due<=?",new String[]{String.valueOf(now)});}
+        int countAll(){return scalar("SELECT COUNT(*) FROM cards WHERE is_excluded=0",null);}
+        int countNew(){return scalar("SELECT COUNT(*) FROM cards WHERE is_excluded=0 AND is_new=1",null);}
+        int countLearned(){return scalar("SELECT COUNT(*) FROM cards WHERE is_excluded=0 AND is_new=0",null);}
+        int countDue(long now){return scalar("SELECT COUNT(*) FROM cards WHERE is_excluded=0 AND is_new=0 AND due<=?",new String[]{String.valueOf(now)});}
         int scalar(String q,String[] a){try(Cursor c=getReadableDatabase().rawQuery(q,a)){c.moveToFirst();return c.getInt(0);}}
-        long nextDue(){try(Cursor c=getReadableDatabase().rawQuery("SELECT MIN(due) FROM cards WHERE is_new=0 AND due>?",new String[]{String.valueOf(System.currentTimeMillis())})){c.moveToFirst();return c.isNull(0)?0:c.getLong(0);}}
-        void resetProgress(){getWritableDatabase().execSQL("UPDATE cards SET due=0, interval_days=0, ease=2.5, reps=0, lapses=0, is_new=1");}
+        long nextDue(){try(Cursor c=getReadableDatabase().rawQuery("SELECT MIN(due) FROM cards WHERE is_excluded=0 AND is_new=0 AND due>?",new String[]{String.valueOf(System.currentTimeMillis())})){c.moveToFirst();return c.isNull(0)?0:c.getLong(0);}}
+        void excludeCard(long id){ContentValues v=new ContentValues();v.put("is_excluded",1);getWritableDatabase().update("cards",v,"id=?",new String[]{String.valueOf(id)});}
+        void resetProgress(){getWritableDatabase().execSQL("UPDATE cards SET due=0, interval_days=0, ease=2.5, reps=0, lapses=0, is_new=1 WHERE is_excluded=0");}
     }
 }
